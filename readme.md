@@ -2,6 +2,8 @@
 
 This repository contains the code for my master's thesis project on forecasting electricity consumption and production to enhance bidding strategies in the Nordpool day-ahead market. The project compares traditional time series models (e.g., ARIMA, SARIMA) with advanced deep learning methods (LSTM) to improve forecast accuracy and inform market bidding decisions.
 
+### Project status: IN PROGRESS (NOT COMPLETED)
+
 ### Repository Structure:
 
 Repository Structure:
