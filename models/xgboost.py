@@ -33,44 +33,34 @@ def get_autocorrelation_lags(
     return autocorr_indexes
 
 
-def create_lagged_features(
-        df: pd.DataFrame, 
-        lags: list
-    ):
-
-    """ 
-      Returns the df with top N autocorrelation lags as features
+def create_features_and_targets(df: pd.DataFrame, forecast_horizon: int = 24, lags: list = None):
     """
-    
-    df = df.copy()
-    df = df.sort_values(by='USAGE_AT')
+    Returns features X and targets y such that the target for each row is the USAGE_KWH value
+    forecast_horizon hours into the future, and includes lagged features.
 
-    # Create lagged columns
-    for lag in lags:
-        df[f'lag_{lag}'] = df['USAGE_KWH'].shift(lag)
+    Parameters:
+      - df: DataFrame with at least 'USAGE_AT' and 'USAGE_KWH'.
+      - forecast_horizon: How many hours ahead to predict.
+      - lags: List of lag values to create as features.
+    """
+    df = df.copy().sort_values(by="USAGE_AT")
     
-    # Drop rows with NaN (due to shifting)
+    # Create lagged features if specified
+    if lags is not None:
+        for lag in lags:
+            df[f'lag_{lag}'] = df['USAGE_KWH'].shift(lag)
+    
+    # Shift the target column upward so that the target is forecast_horizon hours ahead
+    df['target'] = df['USAGE_KWH'].shift(-forecast_horizon)
+    
+    # Drop rows where any feature or the target is NaN
     df = df.dropna()
-
-    return df
-
-
-def get_features(df_preprocessed: pd.DataFrame):
-    """ 
-      Returns the features X (np.ndarray)
-    """
-    df_features = df_preprocessed.copy()
-    df_features = df_features.drop(columns=['USAGE_AT', 'USAGE_KWH'])
-    return df_features.values
-
-
-def get_targets(df_preprocessed: pd.DataFrame):
-    """ 
-      Returns the targets y (np.ndarray)
-    """
-    df_targets = df_preprocessed.copy()
-    df_targets = df_targets['USAGE_KWH']
-    return df_targets.values
+    
+    # For features, drop the original 'USAGE_AT' and 'USAGE_KWH' columns if they're not needed
+    X = df.drop(columns=['USAGE_AT', 'USAGE_KWH', 'target']).values
+    y = df['target'].values
+    
+    return X, y
 
 
 def create_model(
