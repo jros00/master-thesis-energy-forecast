@@ -1,40 +1,9 @@
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.metrics import mean_absolute_error, mean_squared_error
-
-###########################################
-# Sequence generation
-###########################################
-
-def create_sequences(df: pd.DataFrame, columns: list, sequence_length: int = 24, window: int = 24):
-    """
-    Creates sequences of features and a target value.
-
-    The target is the 'USAGE_KWH' value at a time `window` steps ahead of the sequence.
-    """
-    # Choose the columns to be included in the sequence.
-
-    if 'USAGE_AT' in columns:
-        columns.remove('USAGE_AT')
-    data = df[columns].values  # shape: (N, num_features)
-
-    X, y = [], []
-    for i in range(len(data) - sequence_length - window):
-        x_seq = data[i: i + sequence_length, :]
-        # The target is the usage value at the end of the forecast window.
-        y_val = data[i + sequence_length + window - 1, -1]  # Last column is 'USAGE_KWH'
-        X.append(x_seq)
-        y.append(y_val)
-
-    X = np.array(X)
-    y = np.array(y)
-
-    return X, y
-
 
 ############################################
 # Define the LSTM Model
