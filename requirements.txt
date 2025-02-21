@@ -1,7 +1,12 @@
 numpy
 pandas
 matplotlib
+statsmodels
+seaborn
 xgboost
 scikit-learn<1.6
 torch
 torchvision
+pytorch-forecasting
+pytorch-lightning
+ipywidgets
