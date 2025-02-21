@@ -3,6 +3,10 @@ import pandas as pd
 import torch
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
+#############################################
+### NOTE: Generating the initial dataframe
+#############################################
+
 
 def interpolate_missing_hours(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -34,7 +38,7 @@ def add_time_based_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def add_spotprice(df: pd.DataFrame, path_to_spot: str, se_area: str) -> pd.DataFrame:
+def add_spotprice(df: pd.DataFrame, path_to_spot: str, se_area: str = 'SE3') -> pd.DataFrame:
     """
         Adds spot price data to the DataFrame.
     """
@@ -96,11 +100,158 @@ def add_weather_forecast(
     return df_merged
 
 
+def preprocess_data(
+       usage_path: str,
+       spot_path: str | None,
+       weather_path: str | None,
+       se_area: str = 'SE3',
+       weather_columns: list = ['temperature_2m', 'precipitation', 'direct_radiation', 'uv_index', 'wind_speed_10m']    
+    ):
+
+    df_raw = pd.read_csv(usage_path)
+    df = interpolate_missing_hours(df_raw) # Interpolate USAGE_KWH for possible missing hours
+    df = add_time_based_features(df)
+
+    if spot_path:
+        df = add_spotprice(df, spot_path, se_area)
+    
+    if weather_path:
+        df = add_weather_forecast(df, weather_path, weather_columns)
+
+    return df
+
+
+#############################################
+### NOTE: Encoding categorical features (Work in progress)
+#############################################
+
+def encode_categoricals(
+        df: pd.DataFrame,
+        categorical_features: list = ["MONTH", "DAY_OF_MONTH", "WEEKDAY", "HOUR"]
+    ):
+
+    if "HOUR" in categorical_features:
+        # Hour of day (0 to 23)
+        df["hour_sin"] = np.sin(2 * np.pi * df["HOUR"] / 24)
+        df["hour_cos"] = np.cos(2 * np.pi * df["HOUR"] / 24)
+    if "WEEKDAY" in categorical_features:
+        # Weekday (1 to 7)
+        df["weekday_sin"] = np.sin(2 * np.pi * (df["WEEKDAY"] - 1) / 7)
+        df["weekday_cos"] = np.cos(2 * np.pi * (df["WEEKDAY"] - 1) / 7)
+    if "MONTH" in categorical_features:
+        # Month (1 to 12)
+        df["month_sin"] = np.sin(2 * np.pi * (df["MONTH"] - 1) / 12)
+        df["month_cos"] = np.cos(2 * np.pi * (df["MONTH"] - 1) / 12)
+    if "DAY_OF_MONTH" in categorical_features:
+        # Day of month (1 to 31)
+        df["day_sin"] = np.sin(2 * np.pi * (df["DAY_OF_MONTH"] - 1) / 31)
+        df["day_cos"] = np.cos(2 * np.pi * (df["DAY_OF_MONTH"] - 1) / 31)
+
+    df = df.drop(columns=categorical_features)
+    columns: list = df.columns.values.tolist()
+    columns.remove('USAGE_KWH')
+    columns.append('USAGE_KWH')
+    
+    return df[columns]
+
+
+#############################################
+### NOTE: Splitting into X and y (XGBoost)
+#############################################
+
+
+def create_features_and_targets(
+        df: pd.DataFrame, 
+        forecast_horizon: int = 24, 
+        lags: list = None,
+        return_feature_names: bool = False
+    ):
+    """
+    Returns features X and targets y such that the target for each row is the USAGE_KWH value
+    forecast_horizon hours into the future, and includes lagged features.
+
+    Parameters:
+      - df: DataFrame with at least 'USAGE_AT' and 'USAGE_KWH'.
+      - forecast_horizon: How many hours ahead to predict.
+      - lags: List of lag values to create as features.
+    """
+    df = df.copy().sort_values(by="USAGE_AT")
+    
+    # Create lagged features if specified
+    if lags is not None:
+        for lag in lags:
+            df[f'lag_{lag}'] = df['USAGE_KWH'].shift(lag)
+    
+    # Shift the target column upward so that the target is forecast_horizon hours ahead
+    df['target'] = df['USAGE_KWH'].shift(-forecast_horizon)
+    
+    # Drop rows where any feature or the target is NaN
+    df = df.dropna()
+    
+    # For features, drop the original 'USAGE_AT' and 'USAGE_KWH' columns if they're not needed
+    X_df = df.drop(columns=['USAGE_AT', 'USAGE_KWH', 'target'])
+    feature_names = X_df.columns.tolist()
+    X = X_df.values
+    y = df['target'].values
+    
+    if return_feature_names:
+        return X, y, feature_names
+    return X, y
+
+
+#############################################
+### NOTE: Splitting into X and y (LSTM)
+#############################################
+
+def create_sequences(
+        df: pd.DataFrame, 
+        columns: list, 
+        sequence_length: int = 24, 
+        window: int = 24, 
+        return_feature_names: bool = False
+    ):
+    """
+    Creates sequences of features and a target value.
+
+    The target is the 'USAGE_KWH' value at a time `window` steps ahead of the sequence.
+    """
+    # Choose the columns to be included in the sequence.
+
+    if 'USAGE_KWH' in columns:
+        columns.remove('USAGE_KWH')
+        columns.append('USAGE_KWH')
+    if 'USAGE_AT' in columns:
+        columns.remove('USAGE_AT')
+    data = df[columns].values  # shape: (N, num_features)
+
+    X, y = [], []
+    for i in range(len(data) - sequence_length - window):
+        x_seq = data[i: i + sequence_length, :]
+        # The target is the usage value at the end of the forecast window.
+        y_val = data[i + sequence_length + window - 1, -1]  # Last column is 'USAGE_KWH'
+        X.append(x_seq)
+        y.append(y_val)
+
+    X = np.array(X)
+    y = np.array(y)
+
+    if return_feature_names:
+        feature_names = columns
+        return X, y, feature_names
+    return X, y
+
+
+#############################################
+### NOTE: Splitting into train and val
+#############################################
+
 def split_train_val(
         X: np.ndarray,
         y: np.ndarray,
+        feature_names: list,
         train_split: float = 0.9,
         scaler_type: str = 'minmax',
+        scale_columns: list = ["USAGE_KWH"],
         device: torch.device | None = torch.device("cpu")
     ):
 
@@ -119,6 +270,9 @@ def split_train_val(
       - scaler_x: Fitted scaler object for features (used for later inverse scaling)
       - scaler_y: Fitted scaler object for targets (used for later inverse scaling)
     """
+
+    # Identify which columns to scale by index
+    scale_idxs = [feature_names.index(col) for col in scale_columns]
 
     # Split into training and validation
     train_size = int(train_split * len(X))
@@ -148,10 +302,15 @@ def split_train_val(
 
     print(f"Applying {scaler_type} scaling.")
 
-    # Fit only on training features to avoid leakage.
-    scaler_x.fit(X_train_flat)
-    X_train_scaled_flat = scaler_x.transform(X_train_flat)
-    X_val_scaled_flat = scaler_x.transform(X_val_flat)
+    # Fit only on the columns we want to scale in the training set and only on training features to avoid leakage.
+    scaler_x.fit(X_train_flat[:, scale_idxs])
+
+    # 3) Transform only those columns, leave the others unchanged
+    X_train_scaled_flat = X_train_flat.copy()
+    X_val_scaled_flat = X_val_flat.copy()
+
+    X_train_scaled_flat[:, scale_idxs] = scaler_x.transform(X_train_flat[:, scale_idxs])
+    X_val_scaled_flat[:, scale_idxs] = scaler_x.transform(X_val_flat[:, scale_idxs])
 
     # If needed, reshape back to 3D arrays.
     if len(X_train.shape) == 3:
